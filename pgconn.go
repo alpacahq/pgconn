@@ -892,6 +892,58 @@ readloop:
 	return psd, nil
 }
 
+// Deallocate deallocates a prepared statement.
+// Backported from pgconn embedded in pgx/v5
+// https://github.com/jackc/pgx/blob/c00cd65970e579cb722fc65fe2508e4cd1e4cb8f/pgconn/pgconn.go#L966-L1004
+func (pgConn *PgConn) Deallocate(ctx context.Context, name string) error {
+	if err := pgConn.lock(); err != nil {
+		return err
+	}
+	defer pgConn.unlock()
+
+	if ctx != context.Background() {
+		select {
+		case <-ctx.Done():
+			return newContextAlreadyDoneError(ctx)
+		default:
+		}
+		pgConn.contextWatcher.Watch(ctx)
+		defer pgConn.contextWatcher.Unwatch()
+	}
+
+	buf := pgConn.wbuf
+	var err error
+	buf, err = (&pgproto3.Close{ObjectType: 'S', Name: name}).Encode(buf)
+	if err != nil {
+		return err
+	}
+	buf, err = (&pgproto3.Sync{}).Encode(buf)
+	if err != nil {
+		return err
+	}
+
+	n, err := pgConn.conn.Write(buf)
+	if err != nil {
+		pgConn.asyncClose()
+		return &writeError{err: err, safeToRetry: n == 0}
+	}
+
+	for {
+		msg, err := pgConn.receiveMessage()
+		if err != nil {
+			pgConn.asyncClose()
+			return preferContextOverNetTimeoutError(ctx, err)
+		}
+
+		switch msg := msg.(type) {
+		case *pgproto3.ErrorResponse:
+			return ErrorResponseToPgError(msg)
+		case *pgproto3.ReadyForQuery:
+			return nil
+		}
+	}
+}
+
 // ErrorResponseToPgError converts a wire protocol error message to a *PgError.
 func ErrorResponseToPgError(msg *pgproto3.ErrorResponse) *PgError {
 	return &PgError{
