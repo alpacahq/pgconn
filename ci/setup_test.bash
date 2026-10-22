@@ -3,6 +3,7 @@ set -eux
 
 if [[ "${PGVERSION-}" =~ ^[0-9.]+$ ]]
 then
+  export DEBIAN_FRONTEND=noninteractive
   sudo apt-get remove -y --purge postgresql libpq-dev libpq5 postgresql-client-common postgresql-common
   sudo rm -rf /var/lib/postgresql
   wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
